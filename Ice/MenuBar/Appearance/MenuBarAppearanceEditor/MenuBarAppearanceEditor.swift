@@ -14,6 +14,8 @@ struct MenuBarAppearanceEditor: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var appearanceManager: MenuBarAppearanceManager
 
+    @State private var previousNonClearShapeKind = MenuBarShapeKind.none
+
     let location: Location
 
     private var mainFormPadding: EdgeInsets {
@@ -59,6 +61,9 @@ struct MenuBarAppearanceEditor: View {
     @ViewBuilder
     private var mainForm: some View {
         IceForm(padding: mainFormPadding) {
+            IceSection {
+                clearMenuBarToggle
+            }
             if appearanceManager.configuration.shapeKind != .clear {
                 IceSection {
                     isDynamicToggle
@@ -69,10 +74,10 @@ struct MenuBarAppearanceEditor: View {
                 } else {
                     StaticPartialEditor()
                 }
-            }
-            IceSection("Menu Bar Shape") {
-                shapePicker
-                isInset
+                IceSection("Menu Bar Shape") {
+                    shapePicker
+                    isInset
+                }
             }
             if case .settings = location {
                 IceGroupBox {
@@ -99,6 +104,35 @@ struct MenuBarAppearanceEditor: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
         }
+        .onChange(of: appearanceManager.configuration.shapeKind) { _, shapeKind in
+            if shapeKind != .clear {
+                previousNonClearShapeKind = shapeKind
+            }
+        }
+    }
+
+    private var clearMenuBarBinding: Binding<Bool> {
+        Binding(
+            get: {
+                appearanceManager.configuration.shapeKind == .clear
+            },
+            set: { enabled in
+                if enabled {
+                    if appearanceManager.configuration.shapeKind != .clear {
+                        previousNonClearShapeKind = appearanceManager.configuration.shapeKind
+                    }
+                    appearanceManager.configuration.shapeKind = .clear
+                } else if appearanceManager.configuration.shapeKind == .clear {
+                    appearanceManager.configuration.shapeKind = previousNonClearShapeKind
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var clearMenuBarToggle: some View {
+        Toggle("Transparent menu bar", isOn: clearMenuBarBinding)
+            .annotation("Show the desktop wallpaper through the menu bar")
     }
 
     @ViewBuilder

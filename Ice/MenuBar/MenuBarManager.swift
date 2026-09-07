@@ -379,10 +379,10 @@ final class MenuBarManager: ObservableObject {
 
     /// Shows the right-click menu.
     func showRightClickMenu(at point: CGPoint) {
-        let menu = NSMenu(title: "Ice")
+        let menu = NSMenu(title: String(localized: "Ice"))
 
         let editItem = NSMenuItem(
-            title: "Edit Menu Bar Appearance…",
+            title: String(localized: "Edit Menu Bar Appearance…"),
             action: #selector(showAppearanceEditorPopover),
             keyEquivalent: ""
         )
@@ -392,7 +392,7 @@ final class MenuBarManager: ObservableObject {
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(
-            title: "Ice Settings…",
+            title: String(localized: "Ice Settings…"),
             action: #selector(AppDelegate.openSettingsWindow),
             keyEquivalent: ","
         )

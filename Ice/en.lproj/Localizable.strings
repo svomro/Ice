@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Menu bar items are rehidden after a fixed amount of time</key>
+	<string>Menu bar items are rehidden after a fixed amount of time</string>
+	<key>Menu bar items are rehidden using a smart algorithm</key>
+	<string>Menu bar items are rehidden using a smart algorithm</string>
+	<key>Menu bar items are rehidden when the focused app changes</key>
+	<string>Menu bar items are rehidden when the focused app changes</string>
+	<key>Note: You may need to log out and back in for this setting to apply properly.</key>
+	<string>Note: You may need to log out and back in for this setting to apply properly.</string>
+	<key>Show Ice icon</key>
+	<string>Show Ice icon</string>
+	<key>Show hidden menu bar items in a separate bar below the menu bar</key>
+	<string>Show hidden menu bar items in a separate bar below the menu bar</string>
+	<key>Show on click</key>
+	<string>Show on click</string>
+	<key>Show on hover</key>
+	<string>Show on hover</string>
+	<key>Show on scroll</key>
+	<string>Show on scroll</string>
+	<key>Use Ice Bar</key>
+	<string>Use Ice Bar</string>
+	<key>about</key>
+	<string>About</string>
+	<key>advanced</key>
+	<string>Advanced</string>
+	<key>app_name</key>
+	<string>Ice</string>
+	<key>automatically_rehide</key>
+	<string>Automatically rehide</string>
+	<key>choose_custom_icon_annotation</key>
+	<string>Choose a custom icon to show in the menu bar</string>
+	<key>choose_image</key>
+	<string>Choose image…</string>
+	<key>dynamic</key>
+	<string>Dynamic</string>
+	<key>focused_app</key>
+	<string>Focused app</string>
+	<key>general</key>
+	<string>General</string>
+	<key>hotkey_reserved</key>
+	<string>Hotkey is reserved by macOS</string>
+	<key>hotkeys</key>
+	<string>Hotkeys</string>
+	<key>ice_icon</key>
+	<string>Ice icon</string>
+	<key>interface_language</key>
+	<string>Interface Language</string>
+	<key>menu_bar_appearance</key>
+	<string>Menu Bar Appearance</string>
+	<key>menu_bar_layout</key>
+	<string>Menu Bar Layout</string>
+	<key>mouse_pointer</key>
+	<string>Mouse pointer</string>
+	<key>ok</key>
+	<string>OK</string>
+	<key>permissions</key>
+	<string>Permissions</string>
+	<key>record_hotkey</key>
+	<string>Record Hotkey</string>
+	<key>show_on_click</key>
+	<string>Show on click</string>
+	<key>show_on_click_annotation</key>
+	<string>Click inside an empty area of the menu bar to show hidden menu bar items</string>
+	<key>show_on_hover</key>
+	<string>Show on hover</string>
+	<key>show_on_hover_annotation</key>
+	<string>Hover over an empty area of the menu bar to show hidden menu bar items</string>
+	<key>show_on_scroll</key>
+	<string>Show on scroll</string>
+	<key>show_on_scroll_annotation</key>
+	<string>Scroll or swipe in the menu bar to toggle hidden menu bar items</string>
+	<key>smart</key>
+	<string>Smart</string>
+	<key>strategy</key>
+	<string>Strategy</string>
+	<key>timed</key>
+	<string>Timed</string>
+	<key>type_hotkey</key>
+	<string>Type Hotkey</string>
+	<key>use_ice_bar</key>
+	<string>Use Ice Bar</string>
+	<key>use_ice_bar_annotation</key>
+	<string>Show hidden menu bar items in a separate bar below the menu bar</string>
+	<key>Transparent menu bar</key>
+	<string>Transparent menu bar</string>
+	<key>Show the desktop wallpaper through the menu bar</key>
+	<string>Show the desktop wallpaper through the menu bar</string>
+	<key>Ice Settings…</key>
+	<string>Ice Settings…</string>
+	<key>Search Menu Bar Items</key>
+	<string>Search Menu Bar Items</string>
+	<key>Show the %@ Section</key>
+	<string>Show the %@ Section</string>
+	<key>Hide the %@ Section</key>
+	<string>Hide the %@ Section</string>
+	<key>Check for Updates…</key>
+	<string>Check for Updates…</string>
+	<key>Edit Menu Bar Appearance…</key>
+	<string>Edit Menu Bar Appearance…</string>
+	<key>Visible</key>
+	<string>Visible</string>
+	<key>Hidden</key>
+	<string>Hidden</string>
+	<key>Always-Hidden</key>
+	<string>Always-Hidden</string>
+</dict>
+</plist>

@@ -17,7 +17,7 @@ struct MenuBarShapePicker: View {
     @ViewBuilder
     private var shapeKindPicker: some View {
         IcePicker("Shape Kind", selection: appearanceManager.bindings.configuration.shapeKind) {
-            ForEach(MenuBarShapeKind.allCases, id: \.self) { shape in
+            ForEach(MenuBarShapeKind.allCases.filter { $0 != .clear }, id: \.self) { shape in
                 switch shape {
                 case .none:
                     Text("None").tag(shape)
@@ -26,7 +26,7 @@ struct MenuBarShapePicker: View {
                 case .split:
                     Text("Split").tag(shape)
                 case .clear:
-                    Text("Clear").tag(shape)
+                    EmptyView()
                 }
             }
         }
