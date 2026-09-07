@@ -22,6 +22,9 @@ enum MenuBarShapeKind: Int, Codable, Hashable, CaseIterable {
     /// A custom shape that splits the menu bar between
     /// its leading and trailing sides.
     case split = 2
+    /// Covers the native menu bar with the desktop wallpaper. Application menus
+    /// are redrawn while native status item windows remain above the overlay.
+    case clear = 3
 }
 
 /// Information for the ``MenuBarShapeKind/full`` menu bar

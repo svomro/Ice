@@ -18,7 +18,7 @@ struct MenuBarAppearanceConfigurationV2: Hashable {
 
     var hasRoundedShape: Bool {
         switch shapeKind {
-        case .none: false
+        case .none, .clear: false
         case .full: fullShapeInfo.hasRoundedShape
         case .split: splitShapeInfo.hasRoundedShape
         }

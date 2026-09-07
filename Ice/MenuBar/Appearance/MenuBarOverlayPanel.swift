@@ -63,6 +63,9 @@ final class MenuBarOverlayPanel: NSPanel {
     /// The frame of the application menu.
     @Published private(set) var applicationMenuFrame: CGRect?
 
+    /// Snapshots of the application menu items currently shown in the menu bar.
+    @Published private(set) var applicationMenuItems = [MenuBarApplicationMenuItem]()
+
     /// The current desktop wallpaper, clipped to the bounds of the menu bar.
     @Published private(set) var desktopWallpaper: CGImage?
 
@@ -88,7 +91,7 @@ final class MenuBarOverlayPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        self.level = .statusBar
+        self.level = appState.appearanceManager.configuration.shapeKind == .clear ? .mainMenu : .statusBar
         self.title = "Menu Bar Overlay"
         self.backgroundColor = .clear
         self.hasShadow = false
@@ -128,6 +131,24 @@ final class MenuBarOverlayPanel: NSPanel {
             }
             .store(in: &c)
 
+        // Keep clear mode below native status item windows (layer 25), while still
+        // ordering above the native menu bar window (layer 24). This lets the system
+        // continue drawing the right-side status items at full fidelity.
+        if let appState {
+            appState.appearanceManager.$configuration
+                .map(\.shapeKind)
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] shapeKind in
+                    guard let self else {
+                        return
+                    }
+                    level = shapeKind == .clear ? .mainMenu : .statusBar
+                    needsShow = true
+                }
+                .store(in: &c)
+        }
+
         // Update application menu frame when the menu bar owning or frontmost app changes.
         Publishers.Merge(
             NSWorkspace.shared.publisher(for: \.menuBarOwningApplication, options: .old)
@@ -146,23 +167,16 @@ final class MenuBarOverlayPanel: NSPanel {
                 return
             }
             let displayID = owningScreen.displayID
+            insertUpdateFlag(.applicationMenuFrame)
             updateTaskContext.setTask(for: .applicationMenuFrame, timeout: .seconds(10)) {
-                var hasDoneInitialUpdate = false
                 while true {
                     try Task.checkCancellation()
-                    guard
-                        let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID),
-                        latestFrame != self.applicationMenuFrame
-                    else {
-                        if hasDoneInitialUpdate {
-                            try await Task.sleep(for: .seconds(1))
-                        } else {
-                            try await Task.sleep(for: .milliseconds(1))
-                        }
-                        continue
+                    let latestFrame = appState.menuBarManager.getApplicationMenuFrame(for: displayID)
+                    let latestItems = appState.menuBarManager.getApplicationMenuItems(for: displayID)
+                    if latestFrame != self.applicationMenuFrame || latestItems != self.applicationMenuItems {
+                        self.insertUpdateFlag(.applicationMenuFrame)
                     }
-                    self.insertUpdateFlag(.applicationMenuFrame)
-                    hasDoneInitialUpdate = true
+                    try await Task.sleep(for: .seconds(1))
                 }
             }
             Task {
@@ -195,6 +209,31 @@ final class MenuBarOverlayPanel: NSPanel {
             .autoconnect()
             .sink { [weak self] _ in
                 self?.insertUpdateFlag(.desktopWallpaper)
+            }
+            .store(in: &c)
+
+        // A clear menu bar must track animated/video wallpapers. Capturing only the
+        // narrow menu-bar strip keeps this much cheaper than capturing the full display.
+        Timer.publish(every: 1.0 / 15.0, on: .main, in: .common)
+            .autoconnect()
+            .filter { [weak self] _ in
+                self?.appState?.appearanceManager.configuration.shapeKind == .clear
+            }
+            .sink { [weak self] _ in
+                self?.insertUpdateFlag(.desktopWallpaper)
+            }
+            .store(in: &c)
+
+        // AX menu titles can change without the frontmost application changing. Keep
+        // the cached left side fresh while clear mode is active, but avoid polling AX
+        // at video-wallpaper frequency.
+        Timer.publish(every: 0.5, on: .main, in: .common)
+            .autoconnect()
+            .filter { [weak self] _ in
+                self?.appState?.appearanceManager.configuration.shapeKind == .clear
+            }
+            .sink { [weak self] _ in
+                self?.insertUpdateFlag(.applicationMenuFrame)
             }
             .store(in: &c)
 
@@ -278,7 +317,7 @@ final class MenuBarOverlayPanel: NSPanel {
         return owningDisplay
     }
 
-    /// Stores the frame of the menu bar's application menu.
+    /// Stores the frame and visible items of the menu bar's application menu.
     private func updateApplicationMenuFrame(for display: CGDirectDisplayID) {
         guard
             let menuBarManager = appState?.menuBarManager,
@@ -286,6 +325,7 @@ final class MenuBarOverlayPanel: NSPanel {
         else {
             return
         }
+        applicationMenuItems = menuBarManager.getApplicationMenuItems(for: display)
         applicationMenuFrame = menuBarManager.getApplicationMenuFrame(for: display)
     }
 
@@ -433,12 +473,15 @@ private final class MenuBarOverlayPanelContentView: NSView {
                     }
                 }
                 .store(in: &c)
-            // Redraw whenever the application menu frame changes.
+            // Redraw whenever the application menu frame or its items change.
             overlayPanel.$applicationMenuFrame
+                .mapToVoid()
+                .merge(with: overlayPanel.$applicationMenuItems.mapToVoid())
                 .sink { [weak self] _ in
                     self?.needsDisplay = true
                 }
                 .store(in: &c)
+
             // Redraw whenever the desktop wallpaper changes.
             overlayPanel.$desktopWallpaper
                 .sink { [weak self] _ in
@@ -626,6 +669,81 @@ private final class MenuBarOverlayPanelContentView: NSView {
         )
     }
 
+    /// Returns a foreground color suited to the wallpaper in clear mode.
+    private func clearMenuBarForegroundColor(wallpaper: CGImage?) -> NSColor {
+        let brightness = wallpaper?.averageColor(makeOpaque: true)?.brightness ?? 1
+        return brightness > 0.67 ? .black : .white
+    }
+
+    /// Redraws the application menus at their native Accessibility frames.
+    private func drawApplicationMenuItems(
+        in rect: CGRect,
+        overlayPanel: MenuBarOverlayPanel,
+        wallpaper: CGImage?
+    ) {
+        let displayBounds = CGDisplayBounds(overlayPanel.owningScreen.displayID)
+        let foregroundColor = clearMenuBarForegroundColor(wallpaper: wallpaper)
+        let menuFont = NSFont.menuBarFont(ofSize: 0)
+        let appFont = NSFont.boldSystemFont(ofSize: menuFont.pointSize)
+        let appleFont = NSFont.systemFont(ofSize: 17)
+
+        let items = overlayPanel.applicationMenuItems
+
+        for item in items {
+            let title: String
+            let font: NSFont
+            switch item.kind {
+            case .apple:
+                title = ""
+                font = appleFont
+            case .application:
+                title = item.title
+                font = appFont
+            case .standard:
+                title = item.title
+                font = menuFont
+            }
+
+            guard !title.isEmpty else {
+                continue
+            }
+
+            let attributedString = NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: item.isEnabled ? foregroundColor : foregroundColor.withAlphaComponent(0.45),
+                ]
+            )
+            let size = attributedString.size()
+            let itemRect = CGRect(
+                x: item.frame.minX - displayBounds.minX,
+                y: rect.minY,
+                width: item.frame.width,
+                height: rect.height
+            )
+            let point = CGPoint(
+                x: itemRect.midX - (size.width / 2),
+                y: itemRect.midY - (size.height / 2)
+            )
+            attributedString.draw(at: point)
+        }
+    }
+
+    /// Covers the native menu bar with the live wallpaper and redraws the application menus.
+    /// Native status item windows remain above this panel and therefore do not need to be copied.
+    private func drawClearMenuBar(
+        in rect: CGRect,
+        overlayPanel: MenuBarOverlayPanel,
+        context: NSGraphicsContext
+    ) {
+        guard let wallpaper = overlayPanel.desktopWallpaper else {
+            return
+        }
+        context.cgContext.draw(wallpaper, in: rect)
+        drawApplicationMenuItems(in: rect, overlayPanel: overlayPanel, wallpaper: wallpaper)
+    }
+
     /// Draws the tint defined by the given configuration in the given rectangle.
     private func drawTint(in rect: CGRect) {
         switch configuration.tintKind {
@@ -654,7 +772,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
         let drawableBounds = getDrawableBounds()
 
         let shapePath = switch fullConfiguration.shapeKind {
-        case .none:
+        case .none, .clear:
             NSBezierPath(rect: drawableBounds)
         case .full:
             pathForFullShape(
@@ -704,6 +822,12 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 NSColor(cgColor: configuration.borderColor)?.setFill()
                 NSBezierPath(rect: borderBounds).fill()
             }
+        case .clear:
+            drawClearMenuBar(
+                in: drawableBounds,
+                overlayPanel: overlayPanel,
+                context: context
+            )
         case .full, .split:
             if let desktopWallpaper = overlayPanel.desktopWallpaper {
                 context.saveGraphicsState()
@@ -756,7 +880,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 }
 
                 let borderPath = switch fullConfiguration.shapeKind {
-                case .none:
+                case .none, .clear:
                     NSBezierPath(rect: drawableBounds)
                 case .full:
                     pathForFullShape(

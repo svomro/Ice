@@ -25,6 +25,8 @@ struct MenuBarShapePicker: View {
                     Text("Full").tag(shape)
                 case .split:
                     Text("Split").tag(shape)
+                case .clear:
+                    Text("Clear").tag(shape)
                 }
             }
         }
@@ -45,6 +47,10 @@ struct MenuBarShapePicker: View {
             MenuBarSplitShapeExampleView(info: appearanceManager.bindings.configuration.splitShapeInfo)
                 .equatable()
                 .foregroundStyle(colorScheme == .dark ? .primary : .secondary)
+        case .clear:
+            Text("Desktop wallpaper behind the native status items and application menus")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }

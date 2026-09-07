@@ -7,6 +7,19 @@ import AXSwift
 import Combine
 import SwiftUI
 
+struct MenuBarApplicationMenuItem: Hashable {
+    enum Kind: Hashable {
+        case apple
+        case application
+        case standard
+    }
+
+    let title: String
+    let frame: CGRect
+    let kind: Kind
+    let isEnabled: Bool
+}
+
 /// Manager for the state of the menu bar.
 @MainActor
 final class MenuBarManager: ObservableObject {
@@ -323,6 +336,45 @@ final class MenuBarManager: ObservableObject {
         }
 
         return applicationMenuFrame
+    }
+
+    /// Returns snapshots of the application menu items for the given display.
+    func getApplicationMenuItems(for displayID: CGDirectDisplayID) -> [MenuBarApplicationMenuItem] {
+        let displayBounds = CGDisplayBounds(displayID)
+
+        guard
+            let menuBar = try? systemWideElement.elementAtPosition(Float(displayBounds.origin.x), Float(displayBounds.origin.y)),
+            let role = try? menuBar.role(),
+            role == .menuBar,
+            let items: [UIElement] = try? menuBar.arrayAttribute(.children)
+        else {
+            return []
+        }
+
+        return items.enumerated().compactMap { index, item in
+            guard
+                let frame: CGRect = try? item.attribute(.frame),
+                frame.width > 0,
+                frame.height > 0,
+                frame.intersects(displayBounds)
+            else {
+                return nil
+            }
+
+            let title: String = (try? item.attribute(.title)) ?? ""
+            let isEnabled: Bool = (try? item.attribute(.enabled)) ?? true
+            let kind: MenuBarApplicationMenuItem.Kind = switch index {
+            case 0: .apple
+            case 1: .application
+            default: .standard
+            }
+            return MenuBarApplicationMenuItem(
+                title: title,
+                frame: frame,
+                kind: kind,
+                isEnabled: isEnabled
+            )
+        }
     }
 
     /// Shows the right-click menu.

@@ -59,14 +59,16 @@ struct MenuBarAppearanceEditor: View {
     @ViewBuilder
     private var mainForm: some View {
         IceForm(padding: mainFormPadding) {
-            IceSection {
-                isDynamicToggle
-            }
-            if appearanceManager.configuration.isDynamic {
-                LabeledPartialEditor(appearance: .light)
-                LabeledPartialEditor(appearance: .dark)
-            } else {
-                StaticPartialEditor()
+            if appearanceManager.configuration.shapeKind != .clear {
+                IceSection {
+                    isDynamicToggle
+                }
+                if appearanceManager.configuration.isDynamic {
+                    LabeledPartialEditor(appearance: .light)
+                    LabeledPartialEditor(appearance: .dark)
+                } else {
+                    StaticPartialEditor()
+                }
             }
             IceSection("Menu Bar Shape") {
                 shapePicker
@@ -120,11 +122,14 @@ struct MenuBarAppearanceEditor: View {
 
     @ViewBuilder
     private var isInset: some View {
-        if appearanceManager.configuration.shapeKind != .none {
+        switch appearanceManager.configuration.shapeKind {
+        case .full, .split:
             Toggle(
                 "Use inset shape on screens with notch",
                 isOn: appearanceManager.bindings.configuration.isInset
             )
+        case .none, .clear:
+            EmptyView()
         }
     }
 }
