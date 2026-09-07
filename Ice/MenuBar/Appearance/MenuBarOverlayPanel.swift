@@ -91,7 +91,7 @@ final class MenuBarOverlayPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        self.level = appState.appearanceManager.configuration.shapeKind == .clear ? .mainMenu : .statusBar
+        self.level = .statusBar
         self.title = "Menu Bar Overlay"
         self.backgroundColor = .clear
         self.hasShadow = false
@@ -130,24 +130,6 @@ final class MenuBarOverlayPanel: NSPanel {
                 }
             }
             .store(in: &c)
-
-        // Keep clear mode below native status item windows (layer 25), while still
-        // ordering above the native menu bar window (layer 24). This lets the system
-        // continue drawing the right-side status items at full fidelity.
-        if let appState {
-            appState.appearanceManager.$configuration
-                .map(\.shapeKind)
-                .removeDuplicates()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] shapeKind in
-                    guard let self else {
-                        return
-                    }
-                    level = shapeKind == .clear ? .mainMenu : .statusBar
-                    needsShow = true
-                }
-                .store(in: &c)
-        }
 
         // Update application menu frame when the menu bar owning or frontmost app changes.
         Publishers.Merge(
@@ -482,6 +464,18 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 }
                 .store(in: &c)
 
+            // Redraw whenever the status item snapshots change. Clear mode covers
+            // layer-25 status item windows, so their transparent snapshots are painted
+            // back at the native frames above the wallpaper.
+            if let appState = overlayPanel.appState {
+                appState.imageCache.$images
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        self?.needsDisplay = true
+                    }
+                    .store(in: &c)
+            }
+
             // Redraw whenever the desktop wallpaper changes.
             overlayPanel.$desktopWallpaper
                 .sink { [weak self] _ in
@@ -730,8 +724,45 @@ private final class MenuBarOverlayPanelContentView: NSView {
         }
     }
 
-    /// Covers the native menu bar with the live wallpaper and redraws the application menus.
-    /// Native status item windows remain above this panel and therefore do not need to be copied.
+    /// Redraws the on-screen native status items from Ice's existing image cache.
+    private func drawStatusItems(
+        in rect: CGRect,
+        overlayPanel: MenuBarOverlayPanel,
+        context: NSGraphicsContext
+    ) {
+        guard let appState = overlayPanel.appState else {
+            return
+        }
+
+        let displayID = overlayPanel.owningScreen.displayID
+        let displayBounds = CGDisplayBounds(displayID)
+        let images = appState.imageCache.images
+        let items = MenuBarItem.getMenuBarItems(
+            on: displayID,
+            onScreenOnly: true,
+            activeSpaceOnly: false
+        )
+
+        context.saveGraphicsState()
+        defer { context.restoreGraphicsState() }
+        context.imageInterpolation = .high
+
+        for item in items {
+            guard let image = images[item.info] else {
+                continue
+            }
+
+            let itemRect = CGRect(
+                x: item.frame.minX - displayBounds.minX,
+                y: rect.minY,
+                width: item.frame.width,
+                height: rect.height
+            )
+            context.cgContext.draw(image, in: itemRect)
+        }
+    }
+
+    /// Covers the native menu bar with the live wallpaper and redraws its native content.
     private func drawClearMenuBar(
         in rect: CGRect,
         overlayPanel: MenuBarOverlayPanel,
@@ -742,6 +773,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
         }
         context.cgContext.draw(wallpaper, in: rect)
         drawApplicationMenuItems(in: rect, overlayPanel: overlayPanel, wallpaper: wallpaper)
+        drawStatusItems(in: rect, overlayPanel: overlayPanel, context: context)
     }
 
     /// Draws the tint defined by the given configuration in the given rectangle.

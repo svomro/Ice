@@ -41,8 +41,9 @@ final class MenuBarItemImageCache: ObservableObject {
 
         if let appState {
             Publishers.Merge3(
-                // Update every 3 seconds at minimum.
-                Timer.publish(every: 3, on: .main, in: .default).autoconnect().mapToVoid(),
+                // Update every second at minimum. Clear appearance redraws native
+                // status items, including clocks configured to show seconds.
+                Timer.publish(every: 1, on: .main, in: .default).autoconnect().mapToVoid(),
 
                 // Update when the active space or screen parameters change.
                 Publishers.Merge(
@@ -228,8 +229,9 @@ final class MenuBarItemImageCache: ObservableObject {
 
         let isIceBarPresented = await appState.navigationState.isIceBarPresented
         let isSearchPresented = await appState.navigationState.isSearchPresented
+        let isClearAppearance = await appState.appearanceManager.configuration.shapeKind == .clear
 
-        if !isIceBarPresented && !isSearchPresented {
+        if !isIceBarPresented && !isSearchPresented && !isClearAppearance {
             guard await appState.navigationState.isAppFrontmost else {
                 logSkippingCache(reason: "Ice Bar not visible, app not frontmost")
                 return
@@ -268,7 +270,9 @@ final class MenuBarItemImageCache: ObservableObject {
         let isSettingsPresented = await appState.navigationState.isSettingsPresented
 
         var sectionsNeedingDisplay = [MenuBarSection.Name]()
-        if isSettingsPresented || isSearchPresented {
+        if await appState.appearanceManager.configuration.shapeKind == .clear {
+            sectionsNeedingDisplay = MenuBarSection.Name.allCases
+        } else if isSettingsPresented || isSearchPresented {
             sectionsNeedingDisplay = MenuBarSection.Name.allCases
         } else if
             isIceBarPresented,
