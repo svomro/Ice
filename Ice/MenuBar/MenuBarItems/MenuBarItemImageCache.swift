@@ -5,6 +5,7 @@
 
 import Cocoa
 import Combine
+import ScreenCaptureKit
 
 /// Cache for menu bar item images.
 final class MenuBarItemImageCache: ObservableObject {
@@ -98,6 +99,93 @@ final class MenuBarItemImageCache: ObservableObject {
         return true
     }
 
+    /// Captures visible menu bar item windows with ScreenCaptureKit's single-frame API.
+    /// Clear mode refreshes these images frequently, so avoid the legacy continuous
+    /// screen-capture indicator when the modern API is available.
+    @available(macOS 14.0, *)
+    private func createClearImagesWithScreenCaptureKit(
+        for items: [MenuBarItem],
+        screen: NSScreen
+    ) async -> [MenuBarItemInfo: CGImage] {
+        guard let appState else {
+            return [:]
+        }
+        let displayBounds = CGDisplayBounds(screen.displayID)
+        let backingScaleFactor = screen.backingScaleFactor
+
+        let shareableContent: SCShareableContent
+        do {
+            shareableContent = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+        } catch {
+            Logger.imageCache.error("ScreenCaptureKit shareable content failed: \(error.localizedDescription)")
+            return [:]
+        }
+
+        let windowsByID = Dictionary(
+            uniqueKeysWithValues: shareableContent.windows.map { ($0.windowID, $0) }
+        )
+        var images = [MenuBarItemInfo: CGImage]()
+
+        for item in items {
+            let windowID = item.windowID
+            guard
+                let itemFrame = Bridging.getWindowFrame(for: windowID),
+                itemFrame.minY == displayBounds.minY,
+                itemFrame.intersects(displayBounds)
+            else {
+                continue
+            }
+
+            if item.info.namespace == .ice {
+                let image = await MainActor.run { () -> CGImage? in
+                    let sectionName: MenuBarSection.Name? = switch item.info {
+                    case .iceIcon: .visible
+                    case .hiddenControlItem: .hidden
+                    case .alwaysHiddenControlItem: .alwaysHidden
+                    default: nil
+                    }
+                    guard
+                        let sectionName,
+                        let controlItem = appState.menuBarManager.section(withName: sectionName)?.controlItem
+                    else {
+                        return nil
+                    }
+                    return controlItem.renderedImage()
+                }
+                if let image {
+                    images[item.info] = image
+                }
+                continue
+            }
+
+            guard let window = windowsByID[windowID] else {
+                continue
+            }
+
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            configuration.width = max(1, Int((itemFrame.width * backingScaleFactor).rounded()))
+            configuration.height = max(1, Int((itemFrame.height * backingScaleFactor).rounded()))
+            configuration.showsCursor = false
+
+            do {
+                images[item.info] = try await SCScreenshotManager.captureImage(
+                    contentFilter: filter,
+                    configuration: configuration
+                )
+            } catch {
+                Logger.imageCache.debug(
+                    "ScreenCaptureKit failed for menu bar item \(windowID): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        return images
+    }
+
     /// Captures the images of the current menu bar items and returns a dictionary containing
     /// the images, keyed by the current menu bar item infos.
     func createImages(for section: MenuBarSection.Name, screen: NSScreen) async -> [MenuBarItemInfo: CGImage] {
@@ -106,6 +194,11 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         let items = await appState.itemManager.itemCache[section]
+        let isClearAppearance = await appState.appearanceManager.configuration.shapeKind == .clear
+
+        if isClearAppearance, #available(macOS 14.0, *) {
+            return await createClearImagesWithScreenCaptureKit(for: items, screen: screen)
+        }
 
         var images = [MenuBarItemInfo: CGImage]()
         let backingScaleFactor = screen.backingScaleFactor

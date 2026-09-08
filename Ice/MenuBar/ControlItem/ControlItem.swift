@@ -69,6 +69,20 @@ final class ControlItem {
         return CGWindowID(window.windowNumber)
     }
 
+    /// Renders the control item's own status bar button without using screen capture.
+    func renderedImage() -> CGImage? {
+        guard
+            let button = statusItem.button,
+            button.bounds.width > 0,
+            button.bounds.height > 0,
+            let representation = button.bitmapImageRepForCachingDisplay(in: button.bounds)
+        else {
+            return nil
+        }
+        button.cacheDisplay(in: button.bounds, to: representation)
+        return representation.cgImage
+    }
+
     /// A Boolean value that indicates whether the control item serves as
     /// a divider between sections.
     var isSectionDivider: Bool {

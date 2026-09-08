@@ -5,6 +5,7 @@
 
 import Cocoa
 import Combine
+import ScreenCaptureKit
 
 // MARK: - Overlay Panel
 
@@ -68,6 +69,15 @@ final class MenuBarOverlayPanel: NSPanel {
 
     /// The current desktop wallpaper, clipped to the bounds of the menu bar.
     @Published private(set) var desktopWallpaper: CGImage?
+
+    /// The ScreenCaptureKit wallpaper window cached for clear-mode single-frame captures.
+    private var clearWallpaperWindow: SCWindow?
+
+    /// The WindowServer ID associated with ``clearWallpaperWindow``.
+    private var clearWallpaperWindowID: CGWindowID?
+
+    /// Prevents clear wallpaper screenshot requests from overlapping.
+    private var isCapturingClearWallpaper = false
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
@@ -194,15 +204,25 @@ final class MenuBarOverlayPanel: NSPanel {
             }
             .store(in: &c)
 
-        // A clear menu bar must track animated/video wallpapers. Capturing only the
-        // narrow menu-bar strip keeps this much cheaper than capturing the full display.
+        // Track animated/video wallpapers in clear mode with ScreenCaptureKit's
+        // single-frame API. The captured region is only the menu-bar strip.
         Timer.publish(every: 1.0 / 15.0, on: .main, in: .common)
             .autoconnect()
             .filter { [weak self] _ in
                 self?.appState?.appearanceManager.configuration.shapeKind == .clear
             }
             .sink { [weak self] _ in
-                self?.insertUpdateFlag(.desktopWallpaper)
+                guard let self, !isCapturingClearWallpaper else {
+                    return
+                }
+                isCapturingClearWallpaper = true
+                Task { @MainActor [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    defer { isCapturingClearWallpaper = false }
+                    await updateClearDesktopWallpaper()
+                }
             }
             .store(in: &c)
 
@@ -311,9 +331,83 @@ final class MenuBarOverlayPanel: NSPanel {
         applicationMenuFrame = menuBarManager.getApplicationMenuFrame(for: display)
     }
 
+    /// Captures the current clear-mode wallpaper strip with ScreenCaptureKit.
+    @MainActor
+    private func updateClearDesktopWallpaper() async {
+        guard appState?.appearanceManager.configuration.shapeKind == .clear else {
+            return
+        }
+
+        let windows = WindowInfo.getOnScreenWindows()
+        guard
+            let display = validate(for: .updates, with: windows),
+            let wallpaperInfo = WindowInfo.getWallpaperWindow(from: windows, for: display),
+            let menuBarInfo = WindowInfo.getMenuBarWindow(from: windows, for: display)
+        else {
+            return
+        }
+
+        if clearWallpaperWindowID != wallpaperInfo.windowID || clearWallpaperWindow == nil {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+                clearWallpaperWindow = content.windows.first { $0.windowID == wallpaperInfo.windowID }
+                clearWallpaperWindowID = clearWallpaperWindow == nil ? nil : wallpaperInfo.windowID
+            } catch {
+                Logger.overlayPanel.debug(
+                    "ScreenCaptureKit wallpaper discovery failed: \(error.localizedDescription)"
+                )
+                return
+            }
+        }
+
+        guard let clearWallpaperWindow else {
+            return
+        }
+
+        let scale = owningScreen.backingScaleFactor
+        let sourceRect = CGRect(
+            x: menuBarInfo.frame.minX - wallpaperInfo.frame.minX,
+            y: menuBarInfo.frame.minY - wallpaperInfo.frame.minY,
+            width: menuBarInfo.frame.width,
+            height: menuBarInfo.frame.height
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.sourceRect = sourceRect
+        configuration.width = max(1, Int((sourceRect.width * scale).rounded()))
+        configuration.height = max(1, Int((sourceRect.height * scale).rounded()))
+        configuration.showsCursor = false
+
+        do {
+            let filter = SCContentFilter(desktopIndependentWindow: clearWallpaperWindow)
+            let wallpaper = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            )
+            if desktopWallpaper?.dataProvider?.data != wallpaper.dataProvider?.data {
+                desktopWallpaper = wallpaper
+            }
+        } catch {
+            Logger.overlayPanel.debug(
+                "ScreenCaptureKit wallpaper capture failed: \(error.localizedDescription)"
+            )
+            self.clearWallpaperWindow = nil
+            clearWallpaperWindowID = nil
+        }
+    }
+
     /// Stores the area of the desktop wallpaper that is under the menu bar
     /// of the given display.
     private func updateDesktopWallpaper(for display: CGDirectDisplayID, with windows: [WindowInfo]) {
+        if appState?.appearanceManager.configuration.shapeKind == .clear {
+            Task { @MainActor [weak self] in
+                await self?.updateClearDesktopWallpaper()
+            }
+            return
+        }
+
         guard
             let wallpaperWindow = WindowInfo.getWallpaperWindow(from: windows, for: display),
             let menuBarWindow = WindowInfo.getMenuBarWindow(from: windows, for: display)
