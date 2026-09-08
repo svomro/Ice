@@ -58,8 +58,10 @@ struct AboutSettingsPane: View {
             Spacer(minLength: 0)
                 .frame(maxHeight: 20)
 
-            updatesSection
-                .layoutPriority(1)
+            if updatesManager.isEnabled {
+                updatesSection
+                    .layoutPriority(1)
+            }
         }
         .scrollDisabled(true)
         .frame(maxHeight: 500)

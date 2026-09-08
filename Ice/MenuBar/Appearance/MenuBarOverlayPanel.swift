@@ -848,9 +848,9 @@ private final class MenuBarOverlayPanelContentView: NSView {
 
             let itemRect = CGRect(
                 x: item.frame.minX - displayBounds.minX,
-                y: rect.minY,
+                y: rect.maxY - item.frame.height,
                 width: item.frame.width,
-                height: rect.height
+                height: item.frame.height
             )
             context.cgContext.draw(image, in: itemRect)
         }

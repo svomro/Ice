@@ -18,6 +18,9 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// The shared app state.
     private(set) weak var appState: AppState?
 
+    /// A Boolean value that indicates whether this build may use Sparkle updates.
+    let isEnabled: Bool
+
     /// The underlying updater controller.
     private(set) lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
@@ -33,9 +36,15 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// A Boolean value that indicates whether to automatically check for updates.
     var automaticallyChecksForUpdates: Bool {
         get {
-            updater.automaticallyChecksForUpdates
+            guard isEnabled else {
+                return false
+            }
+            return updater.automaticallyChecksForUpdates
         }
         set {
+            guard isEnabled else {
+                return
+            }
             objectWillChange.send()
             updater.automaticallyChecksForUpdates = newValue
         }
@@ -44,9 +53,15 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// A Boolean value that indicates whether to automatically download updates.
     var automaticallyDownloadsUpdates: Bool {
         get {
-            updater.automaticallyDownloadsUpdates
+            guard isEnabled else {
+                return false
+            }
+            return updater.automaticallyDownloadsUpdates
         }
         set {
+            guard isEnabled else {
+                return
+            }
             objectWillChange.send()
             updater.automaticallyDownloadsUpdates = newValue
         }
@@ -55,11 +70,15 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// Creates an updates manager with the given app state.
     init(appState: AppState) {
         self.appState = appState
+        self.isEnabled = Bundle.main.bundleIdentifier != "com.alienzhou.Ice.ClearDev"
         super.init()
     }
 
     /// Sets up the manager.
     func performSetup() {
+        guard isEnabled else {
+            return
+        }
         _ = updaterController
         configureCancellables()
     }
@@ -74,6 +93,9 @@ final class UpdatesManager: NSObject, ObservableObject {
 
     /// Checks for app updates.
     @objc func checkForUpdates() {
+        guard isEnabled else {
+            return
+        }
         #if DEBUG
         // Checking for updates hangs in debug mode.
         let alert = NSAlert()

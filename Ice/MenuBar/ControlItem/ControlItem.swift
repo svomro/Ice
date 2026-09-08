@@ -511,15 +511,16 @@ final class ControlItem {
 
         menu.addItem(.separator())
 
-        let checkForUpdatesItem = NSMenuItem(
-            title: String(localized: "Check for Updates…"),
-            action: #selector(checkForUpdates),
-            keyEquivalent: ""
-        )
-        checkForUpdatesItem.target = self
-        menu.addItem(checkForUpdatesItem)
-
-        menu.addItem(.separator())
+        if appState.updatesManager.isEnabled {
+            let checkForUpdatesItem = NSMenuItem(
+                title: String(localized: "Check for Updates…"),
+                action: #selector(checkForUpdates),
+                keyEquivalent: ""
+            )
+            checkForUpdatesItem.target = self
+            menu.addItem(checkForUpdatesItem)
+            menu.addItem(.separator())
+        }
 
         let quitItem = NSMenuItem(
             title: String(localized: "Quit Ice"),
