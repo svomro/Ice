@@ -852,7 +852,22 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 width: item.frame.width,
                 height: item.frame.height
             )
-            context.cgContext.draw(image, in: itemRect)
+            let imageSize = CGSize(width: image.width, height: image.height)
+            let scale = min(
+                itemRect.width / imageSize.width,
+                itemRect.height / imageSize.height
+            )
+            let drawSize = CGSize(
+                width: imageSize.width * scale,
+                height: imageSize.height * scale
+            )
+            let drawRect = CGRect(
+                x: itemRect.midX - (drawSize.width / 2),
+                y: itemRect.midY - (drawSize.height / 2),
+                width: drawSize.width,
+                height: drawSize.height
+            )
+            context.cgContext.draw(image, in: drawRect)
         }
     }
 

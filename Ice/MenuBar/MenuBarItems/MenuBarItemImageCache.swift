@@ -117,7 +117,7 @@ final class MenuBarItemImageCache: ObservableObject {
         do {
             shareableContent = try await SCShareableContent.excludingDesktopWindows(
                 false,
-                onScreenWindowsOnly: true
+                onScreenWindowsOnly: false
             )
         } catch {
             Logger.imageCache.error("ScreenCaptureKit shareable content failed: \(error.localizedDescription)")
@@ -133,8 +133,7 @@ final class MenuBarItemImageCache: ObservableObject {
             let windowID = item.windowID
             guard
                 let itemFrame = Bridging.getWindowFrame(for: windowID),
-                itemFrame.minY == displayBounds.minY,
-                itemFrame.intersects(displayBounds)
+                itemFrame.minY == displayBounds.minY
             else {
                 continue
             }
