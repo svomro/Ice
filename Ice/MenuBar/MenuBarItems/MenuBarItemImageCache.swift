@@ -24,6 +24,12 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// The currently running cache update task.
+    private var updateTask: Task<Void, Never>?
+
+    /// Identifies the current cache update so a stale task cannot clear a newer one.
+    private var updateTaskToken: UUID?
+
     /// Creates a cache with the given app state.
     init(appState: AppState) {
         self.appState = appState
@@ -61,19 +67,64 @@ final class MenuBarItemImageCache: ObservableObject {
             )
             .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: false)
             .sink { [weak self] in
-                guard let self else {
-                    return
-                }
-                Task.detached {
-                    if ScreenCapture.cachedCheckPermissions() {
-                        await self.updateCache()
-                    }
-                }
+                self?.scheduleUpdate()
             }
             .store(in: &c)
+
+            appState.$isScreenCaptureAllowed
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] isAllowed in
+                    guard let self else { return }
+                    if isAllowed {
+                        scheduleUpdate()
+                    } else {
+                        cancelUpdate()
+                    }
+                }
+                .store(in: &c)
         }
 
         cancellables = c
+    }
+
+    /// Starts one cache update if another one is not already in flight.
+    @MainActor
+    private func scheduleUpdate() {
+        guard
+            updateTask == nil,
+            appState?.isScreenCaptureAllowed == true
+        else {
+            return
+        }
+
+        let token = UUID()
+        updateTaskToken = token
+        updateTask = Task.detached { [weak self] in
+            guard let self else { return }
+            if ScreenCapture.cachedCheckPermissions() {
+                await self.updateCache()
+            }
+            await self.finishUpdate(token: token)
+        }
+    }
+
+    /// Cancels the current cache update and immediately allows a fresh update later.
+    @MainActor
+    private func cancelUpdate() {
+        updateTaskToken = nil
+        updateTask?.cancel()
+        updateTask = nil
+    }
+
+    /// Clears the current cache update only when it still belongs to the given token.
+    @MainActor
+    private func finishUpdate(token: UUID) {
+        guard updateTaskToken == token else {
+            return
+        }
+        updateTask = nil
+        updateTaskToken = nil
     }
 
     /// Logs a reason for skipping the cache.
@@ -107,7 +158,11 @@ final class MenuBarItemImageCache: ObservableObject {
         for items: [MenuBarItem],
         screen: NSScreen
     ) async -> [MenuBarItemInfo: CGImage] {
-        guard let appState else {
+        guard
+            let appState,
+            await appState.isScreenCaptureAllowed,
+            !Task.isCancelled
+        else {
             return [:]
         }
         let displayBounds = CGDisplayBounds(screen.displayID)
@@ -124,12 +179,26 @@ final class MenuBarItemImageCache: ObservableObject {
             return [:]
         }
 
+        guard
+            await appState.isScreenCaptureAllowed,
+            !Task.isCancelled
+        else {
+            return [:]
+        }
+
         let windowsByID = Dictionary(
             uniqueKeysWithValues: shareableContent.windows.map { ($0.windowID, $0) }
         )
         var images = [MenuBarItemInfo: CGImage]()
 
         for item in items {
+            guard
+                await appState.isScreenCaptureAllowed,
+                !Task.isCancelled
+            else {
+                return images
+            }
+
             let windowID = item.windowID
             guard
                 let itemFrame = Bridging.getWindowFrame(for: windowID),
@@ -171,10 +240,17 @@ final class MenuBarItemImageCache: ObservableObject {
             configuration.showsCursor = false
 
             do {
-                images[item.info] = try await SCScreenshotManager.captureImage(
+                let image = try await SCScreenshotManager.captureImage(
                     contentFilter: filter,
                     configuration: configuration
                 )
+                guard
+                    await appState.isScreenCaptureAllowed,
+                    !Task.isCancelled
+                else {
+                    return images
+                }
+                images[item.info] = image
             } catch {
                 Logger.imageCache.debug(
                     "ScreenCaptureKit failed for menu bar item \(windowID): \(error.localizedDescription)"
@@ -286,6 +362,8 @@ final class MenuBarItemImageCache: ObservableObject {
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
         guard
             let appState,
+            await appState.isScreenCaptureAllowed,
+            !Task.isCancelled,
             let screen = NSScreen.main
         else {
             return
@@ -294,6 +372,12 @@ final class MenuBarItemImageCache: ObservableObject {
         var newImages = [MenuBarItemInfo: CGImage]()
 
         for section in sections {
+            guard
+                await appState.isScreenCaptureAllowed,
+                !Task.isCancelled
+            else {
+                return
+            }
             guard await !appState.itemManager.itemCache[section].isEmpty else {
                 continue
             }
@@ -303,6 +387,13 @@ final class MenuBarItemImageCache: ObservableObject {
                 continue
             }
             newImages.merge(sectionImages) { (_, new) in new }
+        }
+
+        guard
+            await appState.isScreenCaptureAllowed,
+            !Task.isCancelled
+        else {
+            return
         }
 
         await MainActor.run { [newImages] in

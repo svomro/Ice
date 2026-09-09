@@ -76,8 +76,11 @@ final class MenuBarOverlayPanel: NSPanel {
     /// The WindowServer ID associated with ``clearWallpaperWindow``.
     private var clearWallpaperWindowID: CGWindowID?
 
-    /// Prevents clear wallpaper screenshot requests from overlapping.
-    private var isCapturingClearWallpaper = false
+    /// The currently running clear-wallpaper capture task.
+    private var clearWallpaperCaptureTask: Task<Void, Never>?
+
+    /// Identifies the current clear-wallpaper capture so a stale task cannot clear a newer one.
+    private var clearWallpaperCaptureToken: UUID?
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
@@ -209,20 +212,12 @@ final class MenuBarOverlayPanel: NSPanel {
         Timer.publish(every: 1.0 / 15.0, on: .main, in: .common)
             .autoconnect()
             .filter { [weak self] _ in
-                self?.appState?.appearanceManager.configuration.shapeKind == .clear
+                guard let self, let appState else { return false }
+                return appState.appearanceManager.configuration.shapeKind == .clear
+                    && appState.isScreenCaptureAllowed
             }
             .sink { [weak self] _ in
-                guard let self, !isCapturingClearWallpaper else {
-                    return
-                }
-                isCapturingClearWallpaper = true
-                Task { @MainActor [weak self] in
-                    guard let self else {
-                        return
-                    }
-                    defer { isCapturingClearWallpaper = false }
-                    await updateClearDesktopWallpaper()
-                }
+                self?.scheduleClearWallpaperCapture()
             }
             .store(in: &c)
 
@@ -282,6 +277,23 @@ final class MenuBarOverlayPanel: NSPanel {
                     self?.alphaValue = isHidden ? 0 : 1
                 }
                 .store(in: &c)
+
+            appState.$isScreenCaptureAllowed
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] isAllowed in
+                    guard let self else { return }
+                    if isAllowed {
+                        resetClearWallpaperCapture()
+                        insertUpdateFlag(.applicationMenuFrame)
+                        insertUpdateFlag(.desktopWallpaper)
+                        contentView?.needsDisplay = true
+                        scheduleClearWallpaperCapture()
+                    } else {
+                        resetClearWallpaperCapture()
+                    }
+                }
+                .store(in: &c)
         }
 
         cancellables = c
@@ -331,10 +343,50 @@ final class MenuBarOverlayPanel: NSPanel {
         applicationMenuFrame = menuBarManager.getApplicationMenuFrame(for: display)
     }
 
+    /// Cancels any pending clear-wallpaper capture and drops the cached wallpaper window.
+    @MainActor
+    private func resetClearWallpaperCapture() {
+        clearWallpaperCaptureToken = nil
+        clearWallpaperCaptureTask?.cancel()
+        clearWallpaperCaptureTask = nil
+        clearWallpaperWindow = nil
+        clearWallpaperWindowID = nil
+    }
+
+    /// Starts one clear-wallpaper capture if another one is not already in flight.
+    @MainActor
+    private func scheduleClearWallpaperCapture() {
+        guard
+            clearWallpaperCaptureTask == nil,
+            let appState,
+            appState.isScreenCaptureAllowed,
+            appState.appearanceManager.configuration.shapeKind == .clear
+        else {
+            return
+        }
+
+        let token = UUID()
+        clearWallpaperCaptureToken = token
+        clearWallpaperCaptureTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await updateClearDesktopWallpaper()
+            guard clearWallpaperCaptureToken == token else {
+                return
+            }
+            clearWallpaperCaptureTask = nil
+            clearWallpaperCaptureToken = nil
+        }
+    }
+
     /// Captures the current clear-mode wallpaper strip with ScreenCaptureKit.
     @MainActor
     private func updateClearDesktopWallpaper() async {
-        guard appState?.appearanceManager.configuration.shapeKind == .clear else {
+        guard
+            let appState,
+            appState.isScreenCaptureAllowed,
+            appState.appearanceManager.configuration.shapeKind == .clear,
+            !Task.isCancelled
+        else {
             return
         }
 
@@ -353,6 +405,9 @@ final class MenuBarOverlayPanel: NSPanel {
                     false,
                     onScreenWindowsOnly: true
                 )
+                guard !Task.isCancelled, appState.isScreenCaptureAllowed else {
+                    return
+                }
                 clearWallpaperWindow = content.windows.first { $0.windowID == wallpaperInfo.windowID }
                 clearWallpaperWindowID = clearWallpaperWindow == nil ? nil : wallpaperInfo.windowID
             } catch {
@@ -386,6 +441,9 @@ final class MenuBarOverlayPanel: NSPanel {
                 contentFilter: filter,
                 configuration: configuration
             )
+            guard !Task.isCancelled, appState.isScreenCaptureAllowed else {
+                return
+            }
             if desktopWallpaper?.dataProvider?.data != wallpaper.dataProvider?.data {
                 desktopWallpaper = wallpaper
             }
@@ -403,7 +461,7 @@ final class MenuBarOverlayPanel: NSPanel {
     private func updateDesktopWallpaper(for display: CGDirectDisplayID, with windows: [WindowInfo]) {
         if appState?.appearanceManager.configuration.shapeKind == .clear {
             Task { @MainActor [weak self] in
-                await self?.updateClearDesktopWallpaper()
+                self?.scheduleClearWallpaperCapture()
             }
             return
         }

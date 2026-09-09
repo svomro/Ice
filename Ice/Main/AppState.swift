@@ -4,6 +4,7 @@
 //
 
 import Combine
+import CoreGraphics
 import SwiftUI
 
 /// The model for app-wide state.
@@ -11,6 +12,18 @@ import SwiftUI
 final class AppState: ObservableObject {
     /// A Boolean value that indicates whether the active space is fullscreen.
     @Published private(set) var isActiveSpaceFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+
+    /// A Boolean value that indicates whether ScreenCaptureKit work should run.
+    ///
+    /// Capture is paused while the displays are asleep, the user session is inactive,
+    /// or the login window is covering the session after wake.
+    @Published private(set) var isScreenCaptureAllowed: Bool
+
+    /// A Boolean value that indicates whether the displays are awake.
+    private var screensAreAwake = true
+
+    /// A Boolean value that indicates whether this user's workspace session is active.
+    private var userSessionIsActive = true
 
     /// Manager for the menu bar's appearance.
     private(set) lazy var appearanceManager = MenuBarAppearanceManager(appState: self)
@@ -81,9 +94,87 @@ final class AppState: ObservableObject {
         set { Bridging.setConnectionProperty(newValue, forKey: "SetsCursorInBackground") }
     }
 
+    init() {
+        isScreenCaptureAllowed = !Self.isScreenLocked
+    }
+
+    /// Returns whether macOS is currently presenting the lock screen for this session.
+    ///
+    /// `CGSSessionScreenIsLocked` is present only while the session is locked on current
+    /// macOS releases. The workspace session notifications below remain the primary signal;
+    /// this check closes the gap between display wake and the later unlock.
+    private static var isScreenLocked: Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            return false
+        }
+        return session["CGSSessionScreenIsLocked"] as? Bool ?? false
+    }
+
+    /// Recomputes whether screen capture work is safe to start.
+    private func updateScreenCaptureAvailability() {
+        let isAllowed = screensAreAwake && userSessionIsActive && !Self.isScreenLocked
+        guard isAllowed != isScreenCaptureAllowed else {
+            return
+        }
+        Logger.appState.debug("Screen capture availability changed to \(isAllowed)")
+        isScreenCaptureAllowed = isAllowed
+    }
+
     /// Configures the internal observers for the app state.
     private func configureCancellables() {
         var c = Set<AnyCancellable>()
+
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+
+        workspaceNotificationCenter
+            .publisher(for: NSWorkspace.screensDidSleepNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                screensAreAwake = false
+                updateScreenCaptureAvailability()
+            }
+            .store(in: &c)
+
+        workspaceNotificationCenter
+            .publisher(for: NSWorkspace.screensDidWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                screensAreAwake = true
+                updateScreenCaptureAvailability()
+            }
+            .store(in: &c)
+
+        workspaceNotificationCenter
+            .publisher(for: NSWorkspace.sessionDidResignActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                userSessionIsActive = false
+                updateScreenCaptureAvailability()
+            }
+            .store(in: &c)
+
+        workspaceNotificationCenter
+            .publisher(for: NSWorkspace.sessionDidBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                userSessionIsActive = true
+                updateScreenCaptureAvailability()
+            }
+            .store(in: &c)
+
+        // The session can remain technically active while the login window covers it.
+        // Poll the inexpensive CoreGraphics session flag so wake does not restart capture
+        // until the user has actually unlocked the Mac.
+        Timer.publish(every: 0.5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.updateScreenCaptureAvailability()
+            }
+            .store(in: &c)
 
         Publishers.Merge3(
             NSWorkspace.shared.notificationCenter
