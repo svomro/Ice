@@ -16,7 +16,7 @@ final class AppState: ObservableObject {
     /// A Boolean value that indicates whether ScreenCaptureKit work should run.
     ///
     /// Capture is paused while the displays are asleep, the user session is inactive,
-    /// or the login window is covering the session after wake.
+    /// the login window is covering the session after wake, or Control Center is open.
     @Published private(set) var isScreenCaptureAllowed: Bool
 
     /// A Boolean value that indicates whether the displays are awake.
@@ -95,7 +95,7 @@ final class AppState: ObservableObject {
     }
 
     init() {
-        isScreenCaptureAllowed = !Self.isScreenLocked
+        isScreenCaptureAllowed = !Self.isScreenLocked && !Self.isControlCenterPresented
     }
 
     /// Returns whether macOS is currently presenting the lock screen for this session.
@@ -110,9 +110,38 @@ final class AppState: ObservableObject {
         return session["CGSSessionScreenIsLocked"] as? Bool ?? false
     }
 
+    /// Returns whether Control Center is presenting a panel above the menu bar.
+    ///
+    /// Repeated ScreenCaptureKit snapshots while a Control Center panel is visible make
+    /// macOS continually refresh the "recently used" privacy row. Pausing capture until
+    /// the panel closes keeps that system UI stable without sacrificing live wallpaper
+    /// updates during normal use.
+    private static var isControlCenterPresented: Bool {
+        let controlCenterPIDs = Set(
+            NSRunningApplication
+                .runningApplications(withBundleIdentifier: MenuBarItemInfo.Namespace.controlCenter.rawValue)
+                .map(\.processIdentifier)
+        )
+        guard !controlCenterPIDs.isEmpty else {
+            return false
+        }
+
+        return WindowInfo
+            .getOnScreenWindows(excludeDesktopWindows: true)
+            .contains { window in
+                controlCenterPIDs.contains(window.ownerPID) &&
+                !window.isMenuBarItem &&
+                window.layer > kCGStatusWindowLevel &&
+                window.alpha > 0
+            }
+    }
+
     /// Recomputes whether screen capture work is safe to start.
     private func updateScreenCaptureAvailability() {
-        let isAllowed = screensAreAwake && userSessionIsActive && !Self.isScreenLocked
+        let isAllowed = screensAreAwake &&
+            userSessionIsActive &&
+            !Self.isScreenLocked &&
+            !Self.isControlCenterPresented
         guard isAllowed != isScreenCaptureAllowed else {
             return
         }
@@ -197,6 +226,7 @@ final class AppState: ObservableObject {
                 return
             }
             isActiveSpaceFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+            updateScreenCaptureAvailability()
         }
         .store(in: &c)
 
