@@ -222,6 +222,9 @@ final class MenuBarItemImageCache: ObservableObject {
                 continue
             }
 
+            // Keep layer-25 status items as desktop-independent window captures. A
+            // display-level `including:` filter can return blank menu bar content on
+            // multi-display setups, causing the clear overlay to erase the right side.
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let configuration = SCStreamConfiguration()
             configuration.width = max(1, Int((itemFrame.width * backingScaleFactor).rounded()))
