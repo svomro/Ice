@@ -570,9 +570,7 @@ final class MenuBarItemImageCache: ObservableObject {
         let isSettingsPresented = await appState.navigationState.isSettingsPresented
 
         var sectionsNeedingDisplay = [MenuBarSection.Name]()
-        if await appState.appearanceManager.configuration.shapeKind == .clear {
-            sectionsNeedingDisplay = MenuBarSection.Name.allCases
-        } else if isSettingsPresented || isSearchPresented {
+        if isSettingsPresented || isSearchPresented {
             sectionsNeedingDisplay = MenuBarSection.Name.allCases
         } else if
             isIceBarPresented,
