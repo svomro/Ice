@@ -959,26 +959,23 @@ private final class MenuBarOverlayPanelContentView: NSView {
         context.imageInterpolation = .high
         var otherItemsByDisplay = [CGDirectDisplayID: [MenuBarItem]]()
 
+        func imageMatchesCurrentItem(_ image: CGImage, item: MenuBarItem) -> Bool {
+            let backingScaleFactor = overlayPanel.owningScreen.backingScaleFactor
+            let expectedWidth = Int((item.frame.width * backingScaleFactor).rounded())
+            let expectedHeight = Int((item.frame.height * backingScaleFactor).rounded())
+            return abs(image.width - expectedWidth) <= 1 && abs(image.height - expectedHeight) <= 1
+        }
+
         for item in items {
             let image: CGImage? = {
                 if let image = clearImages?[item.windowID] {
                     return image
                 }
 
-                // The WindowServer moves the two sets of status-item windows between displays
-                // when keyboard focus changes. During that handoff the same window ID is often
-                // still present in the other display's previous clear cache.
-                for (otherDisplayID, images) in appState.imageCache.clearImagesByDisplay
-                    where otherDisplayID != displayID
-                {
-                    if let image = images[item.windowID] {
-                        return image
-                    }
-                }
-
-                // Some system items are recreated with a different window ID. Match the same
-                // owning process and ordinal on another display as a short-lived fallback; the
-                // next complete cache refresh replaces this with the target display's pixels.
+                // During a focus handoff WindowServer swaps the two display copies. Match the
+                // corresponding item now visible on the other display, then look up that window
+                // ID in *this display's previous cache*. This preserves the target display's
+                // native menu-bar height while the fresh capture is still in flight.
                 let ownerItems = items.filter { $0.ownerPID == item.ownerPID }
                 if let ownerIndex = ownerItems.firstIndex(where: { $0.windowID == item.windowID }) {
                     for screen in NSScreen.screens where screen.displayID != displayID {
@@ -999,13 +996,36 @@ private final class MenuBarOverlayPanelContentView: NSView {
                             continue
                         }
                         let otherItem = otherItems[ownerIndex]
-                        if let image = appState.imageCache.clearImagesByDisplay[screen.displayID]?[otherItem.windowID] {
+                        if
+                            let image = clearImages?[otherItem.windowID],
+                            imageMatchesCurrentItem(image, item: item)
+                        {
                             return image
                         }
                     }
                 }
 
-                return legacyImages[item.info]
+                // A cross-display cache is only safe when its pixel dimensions already match
+                // this display's item. Reject the common 37 pt -> 24 pt handoff that otherwise
+                // shrinks the icon horizontally through aspect-fit scaling.
+                for (otherDisplayID, images) in appState.imageCache.clearImagesByDisplay
+                    where otherDisplayID != displayID
+                {
+                    if
+                        let image = images[item.windowID],
+                        imageMatchesCurrentItem(image, item: item)
+                    {
+                        return image
+                    }
+                }
+
+                if
+                    let image = legacyImages[item.info],
+                    imageMatchesCurrentItem(image, item: item)
+                {
+                    return image
+                }
+                return nil
             }()
 
             guard let image else {

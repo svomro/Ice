@@ -19,6 +19,10 @@ final class MenuBarItemImageCache: ObservableObject {
     /// need a display-local snapshot set instead of reusing the main screen's pixels.
     @Published private(set) var clearImagesByDisplay = [CGDirectDisplayID: [CGWindowID: CGImage]]()
 
+    /// Display-local fallback images keyed by a stable owner/ordinal slot rather than the
+    /// WindowServer ID, which changes displays when keyboard focus moves between screens.
+    private var clearSlotImagesByDisplay = [CGDirectDisplayID: [ClearItemSlot: CGImage]]()
+
     /// The screen of the cached item images.
     private(set) var screen: NSScreen?
 
@@ -270,7 +274,28 @@ final class MenuBarItemImageCache: ObservableObject {
     /// off-screen hidden items and is deliberately tied to the main screen. A clear overlay
     /// only needs the native items visible on the display it covers.
     @available(macOS 14.0, *)
-    private func createVisibleClearImages(for screen: NSScreen) async -> [CGWindowID: CGImage]? {
+    private struct ClearItemSlot: Hashable {
+        let ownerPID: pid_t
+        let ordinal: Int
+    }
+
+    private struct VisibleClearCapture {
+        let items: [MenuBarItem]
+        let images: [CGWindowID: CGImage]
+    }
+
+    private func clearItemSlots(for items: [MenuBarItem]) -> [CGWindowID: ClearItemSlot] {
+        var ordinalsByOwner = [pid_t: Int]()
+        var slots = [CGWindowID: ClearItemSlot]()
+        for item in items {
+            let ordinal = ordinalsByOwner[item.ownerPID, default: 0]
+            ordinalsByOwner[item.ownerPID] = ordinal + 1
+            slots[item.windowID] = ClearItemSlot(ownerPID: item.ownerPID, ordinal: ordinal)
+        }
+        return slots
+    }
+
+    private func createVisibleClearImages(for screen: NSScreen) async -> VisibleClearCapture? {
         let items = MenuBarItem.getMenuBarItems(
             on: screen.displayID,
             onScreenOnly: true,
@@ -280,10 +305,10 @@ final class MenuBarItemImageCache: ObservableObject {
             return nil
         }
         let images = await createClearWindowImagesWithScreenCaptureKit(for: items, screen: screen)
-        guard !images.isEmpty else {
-            return nil
-        }
-        return images
+        return VisibleClearCapture(
+            items: items,
+            images: images
+        )
     }
 
     /// Captures the images of the current menu bar items and returns a dictionary containing
@@ -398,8 +423,11 @@ final class MenuBarItemImageCache: ObservableObject {
         if isClearAppearance, #available(macOS 14.0, *) {
             let screens = await MainActor.run { NSScreen.screens }
             let activeDisplayIDs = Set(screens.map(\.displayID))
-            var imagesByDisplay = await MainActor.run {
-                clearImagesByDisplay.filter { activeDisplayIDs.contains($0.key) }
+            var (imagesByDisplay, slotImagesByDisplay) = await MainActor.run {
+                (
+                    clearImagesByDisplay.filter { activeDisplayIDs.contains($0.key) },
+                    clearSlotImagesByDisplay.filter { activeDisplayIDs.contains($0.key) }
+                )
             }
 
             for screen in screens {
@@ -409,10 +437,35 @@ final class MenuBarItemImageCache: ObservableObject {
                 else {
                     return
                 }
-                if let images = await createVisibleClearImages(for: screen) {
-                    var mergedImages = imagesByDisplay[screen.displayID] ?? [:]
-                    mergedImages.merge(images) { _, new in new }
-                    imagesByDisplay[screen.displayID] = mergedImages
+                if let capture = await createVisibleClearImages(for: screen) {
+                    let slotsByWindowID = clearItemSlots(for: capture.items)
+                    let activeSlots = Set(slotsByWindowID.values)
+                    var slotImages = (slotImagesByDisplay[screen.displayID] ?? [:])
+                        .filter { activeSlots.contains($0.key) }
+
+                    for (windowID, image) in capture.images {
+                        if let slot = slotsByWindowID[windowID] {
+                            slotImages[slot] = image
+                        }
+                    }
+
+                    // Re-key the display-local fallback onto the *current* window IDs. If SCK
+                    // misses one item during the handoff, its previous image still comes from
+                    // this display and therefore retains the correct 24 pt / 37 pt geometry.
+                    var displayImages = [CGWindowID: CGImage]()
+                    for item in capture.items {
+                        if let image = capture.images[item.windowID] {
+                            displayImages[item.windowID] = image
+                        } else if
+                            let slot = slotsByWindowID[item.windowID],
+                            let image = slotImages[slot]
+                        {
+                            displayImages[item.windowID] = image
+                        }
+                    }
+
+                    imagesByDisplay[screen.displayID] = displayImages
+                    slotImagesByDisplay[screen.displayID] = slotImages
                 }
             }
 
@@ -424,10 +477,12 @@ final class MenuBarItemImageCache: ObservableObject {
             }
             await MainActor.run { [imagesByDisplay] in
                 clearImagesByDisplay = imagesByDisplay
+                clearSlotImagesByDisplay = slotImagesByDisplay
             }
         } else if !clearImagesByDisplay.isEmpty {
             await MainActor.run {
                 clearImagesByDisplay.removeAll()
+                clearSlotImagesByDisplay.removeAll()
             }
         }
 
