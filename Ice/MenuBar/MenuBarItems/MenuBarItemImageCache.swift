@@ -41,6 +41,11 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Identifies the current cache update so a stale task cannot clear a newer one.
     private var updateTaskToken: UUID?
 
+    /// Start time of the current cache update. ScreenCaptureKit occasionally leaves a
+    /// single-frame capture suspended indefinitely; the periodic refresh uses this to
+    /// abandon that task instead of freezing every later menu bar snapshot behind it.
+    private var updateTaskStartedAt: Date?
+
     /// Creates a cache with the given app state.
     init(appState: AppState) {
         self.appState = appState
@@ -102,15 +107,28 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Starts one cache update if another one is not already in flight.
     @MainActor
     private func scheduleUpdate() {
-        guard
-            updateTask == nil,
-            appState?.isScreenCaptureAllowed == true
-        else {
+        guard appState?.isScreenCaptureAllowed == true else {
             return
+        }
+
+        if let currentTask = updateTask {
+            guard
+                let startedAt = updateTaskStartedAt,
+                Date().timeIntervalSince(startedAt) >= 5
+            else {
+                return
+            }
+
+            Logger.imageCache.warning("Abandoning stalled menu bar image cache update")
+            updateTaskToken = nil
+            currentTask.cancel()
+            updateTask = nil
+            updateTaskStartedAt = nil
         }
 
         let token = UUID()
         updateTaskToken = token
+        updateTaskStartedAt = Date()
         updateTask = Task.detached { [weak self] in
             guard let self else { return }
             if ScreenCapture.cachedCheckPermissions() {
@@ -126,6 +144,7 @@ final class MenuBarItemImageCache: ObservableObject {
         updateTaskToken = nil
         updateTask?.cancel()
         updateTask = nil
+        updateTaskStartedAt = nil
     }
 
     /// Clears the current cache update only when it still belongs to the given token.
@@ -136,6 +155,7 @@ final class MenuBarItemImageCache: ObservableObject {
         }
         updateTask = nil
         updateTaskToken = nil
+        updateTaskStartedAt = nil
     }
 
     /// Logs a reason for skipping the cache.
