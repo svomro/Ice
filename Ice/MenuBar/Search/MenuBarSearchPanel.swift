@@ -407,7 +407,12 @@ private struct MenuBarSearchItemView: View {
 
     let item: MenuBarItem
 
-    private var image: NSImage? {
+    private struct PreviewImage {
+        let image: NSImage
+        let usesTemplateRendering: Bool
+    }
+
+    private var previewImage: PreviewImage? {
         guard
             let image = imageCache.images[item.info]?.trimmingTransparentPixels(around: [.minXEdge, .maxXEdge]),
             let screen = imageCache.screen
@@ -418,7 +423,31 @@ private struct MenuBarSearchItemView: View {
             width: CGFloat(image.width) / screen.backingScaleFactor,
             height: CGFloat(image.height) / screen.backingScaleFactor
         )
-        return NSImage(cgImage: image, size: size)
+
+        let usesTemplateRendering: Bool = {
+            guard
+                let averageColor = image.averageColor(),
+                let color = NSColor(cgColor: averageColor)?.usingColorSpace(.deviceRGB)
+            else {
+                return false
+            }
+
+            var hue = CGFloat.zero
+            var saturation = CGFloat.zero
+            var brightness = CGFloat.zero
+            var alpha = CGFloat.zero
+            color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+            // White or near-white monochrome menu bar glyphs disappear against the search
+            // panel's light material. Render only those snapshots as templates so SwiftUI's
+            // primary color supplies the appropriate contrast in both light and dark mode.
+            return brightness > 0.67 && saturation < 0.2
+        }()
+
+        return PreviewImage(
+            image: NSImage(cgImage: image, size: size),
+            usesTemplateRendering: usesTemplateRendering
+        )
     }
 
     private var appIcon: NSImage? {
@@ -446,7 +475,7 @@ private struct MenuBarSearchItemView: View {
 
     @ViewBuilder
     private var imageViewWithBackground: some View {
-        if let image {
+        if let previewImage {
             ZStack {
                 RoundedRectangle(cornerRadius: 5, style: .circular)
                     .fill(.regularMaterial)
@@ -461,8 +490,16 @@ private struct MenuBarSearchItemView: View {
                             .opacity(0.15)
                     }
 
-                Image(nsImage: image)
-                    .frame(height: 24)
+                if previewImage.usesTemplateRendering {
+                    Image(nsImage: previewImage.image)
+                        .renderingMode(.template)
+                        .foregroundStyle(.primary)
+                        .frame(height: 24)
+                } else {
+                    Image(nsImage: previewImage.image)
+                        .renderingMode(.original)
+                        .frame(height: 24)
+                }
             }
         }
     }
