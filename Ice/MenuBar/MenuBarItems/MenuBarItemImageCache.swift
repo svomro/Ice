@@ -214,28 +214,6 @@ final class MenuBarItemImageCache: ObservableObject {
                 continue
             }
 
-            if item.info.namespace == .ice {
-                let image = await MainActor.run { () -> CGImage? in
-                    let sectionName: MenuBarSection.Name? = switch item.info {
-                    case .iceIcon: .visible
-                    case .hiddenControlItem: .hidden
-                    case .alwaysHiddenControlItem: .alwaysHidden
-                    default: nil
-                    }
-                    guard
-                        let sectionName,
-                        let controlItem = appState.menuBarManager.section(withName: sectionName)?.controlItem
-                    else {
-                        return nil
-                    }
-                    return controlItem.renderedImage()
-                }
-                if let image {
-                    images[windowID] = image
-                }
-                continue
-            }
-
             guard let window = windowsByID[windowID] else {
                 continue
             }

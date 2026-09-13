@@ -936,8 +936,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
     private func drawStatusItems(
         in rect: CGRect,
         overlayPanel: MenuBarOverlayPanel,
-        context: NSGraphicsContext,
-        wallpaper: CGImage?
+        context: NSGraphicsContext
     ) {
         guard let appState = overlayPanel.appState else {
             return
@@ -959,22 +958,6 @@ private final class MenuBarOverlayPanelContentView: NSView {
         defer { context.restoreGraphicsState() }
         context.imageInterpolation = .high
         var otherItemsByDisplay = [CGDirectDisplayID: [MenuBarItem]]()
-
-        func usesTemplateTint(_ item: MenuBarItem) -> Bool {
-            let sectionName: MenuBarSection.Name? = switch item.info {
-            case .iceIcon: .visible
-            case .hiddenControlItem: .hidden
-            case .alwaysHiddenControlItem: .alwaysHidden
-            default: nil
-            }
-            guard
-                let sectionName,
-                let controlItem = appState.menuBarManager.section(withName: sectionName)?.controlItem
-            else {
-                return false
-            }
-            return controlItem.renderedImageUsesTemplateTint
-        }
 
         for item in items {
             let image: CGImage? = {
@@ -1051,19 +1034,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
                 height: drawSize.height
             )
 
-            if item.info.namespace == .ice, usesTemplateTint(item) {
-                // Ice renders its own status buttons directly instead of screen-capturing
-                // them, which avoids recursive thumbnails but bypasses macOS's menu-bar
-                // template tint. Reapply the same clear-mode foreground color used by the
-                // application menu so our icon follows the surrounding system status items.
-                context.cgContext.saveGState()
-                context.cgContext.clip(to: drawRect, mask: image)
-                context.cgContext.setFillColor(clearMenuBarForegroundColor(wallpaper: wallpaper).cgColor)
-                context.cgContext.fill(drawRect)
-                context.cgContext.restoreGState()
-            } else {
-                context.cgContext.draw(image, in: drawRect)
-            }
+            context.cgContext.draw(image, in: drawRect)
         }
     }
 
@@ -1078,7 +1049,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
         }
         context.cgContext.draw(wallpaper, in: rect)
         drawApplicationMenuItems(in: rect, overlayPanel: overlayPanel, wallpaper: wallpaper)
-        drawStatusItems(in: rect, overlayPanel: overlayPanel, context: context, wallpaper: wallpaper)
+        drawStatusItems(in: rect, overlayPanel: overlayPanel, context: context)
     }
 
     /// Draws the tint defined by the given configuration in the given rectangle.
