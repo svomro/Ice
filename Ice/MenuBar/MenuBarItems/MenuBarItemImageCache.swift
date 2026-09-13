@@ -12,6 +12,13 @@ final class MenuBarItemImageCache: ObservableObject {
     /// The cached item images.
     @Published private(set) var images = [MenuBarItemInfo: CGImage]()
 
+    /// Visible item images captured separately for each display while clear mode is active.
+    ///
+    /// The regular ``images`` cache intentionally follows the main screen because it is also
+    /// used by Ice Bar, Search, and Layout Bar. Clear overlays exist on every screen, so they
+    /// need a display-local snapshot set instead of reusing the main screen's pixels.
+    @Published private(set) var clearImagesByDisplay = [CGDirectDisplayID: [CGWindowID: CGImage]]()
+
     /// The screen of the cached item images.
     private(set) var screen: NSScreen?
 
@@ -154,10 +161,10 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Clear mode refreshes these images frequently, so avoid the legacy continuous
     /// screen-capture indicator when the modern API is available.
     @available(macOS 14.0, *)
-    private func createClearImagesWithScreenCaptureKit(
+    private func createClearWindowImagesWithScreenCaptureKit(
         for items: [MenuBarItem],
         screen: NSScreen
-    ) async -> [MenuBarItemInfo: CGImage] {
+    ) async -> [CGWindowID: CGImage] {
         guard
             let appState,
             await appState.isScreenCaptureAllowed,
@@ -189,7 +196,7 @@ final class MenuBarItemImageCache: ObservableObject {
         let windowsByID = Dictionary(
             uniqueKeysWithValues: shareableContent.windows.map { ($0.windowID, $0) }
         )
-        var images = [MenuBarItemInfo: CGImage]()
+        var images = [CGWindowID: CGImage]()
 
         for item in items {
             guard
@@ -224,7 +231,7 @@ final class MenuBarItemImageCache: ObservableObject {
                     return controlItem.renderedImage()
                 }
                 if let image {
-                    images[item.info] = image
+                    images[windowID] = image
                 }
                 continue
             }
@@ -250,7 +257,7 @@ final class MenuBarItemImageCache: ObservableObject {
                 else {
                     return images
                 }
-                images[item.info] = image
+                images[windowID] = image
             } catch {
                 Logger.imageCache.debug(
                     "ScreenCaptureKit failed for menu bar item \(windowID): \(error.localizedDescription)"
@@ -259,6 +266,39 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         return images
+    }
+
+    /// Captures clear-mode images using the legacy item-info cache key expected by Ice Bar,
+    /// Search, and Layout Bar. Duplicate item infos intentionally retain the existing
+    /// last-wins behavior here; clear menu bar overlays use window IDs instead.
+    @available(macOS 14.0, *)
+    private func createClearImagesWithScreenCaptureKit(
+        for items: [MenuBarItem],
+        screen: NSScreen
+    ) async -> [MenuBarItemInfo: CGImage] {
+        let windowImages = await createClearWindowImagesWithScreenCaptureKit(for: items, screen: screen)
+        var images = [MenuBarItemInfo: CGImage]()
+        for item in items {
+            if let image = windowImages[item.windowID] {
+                images[item.info] = image
+            }
+        }
+        return images
+    }
+
+    /// Captures the menu bar items that are currently visible on the given screen.
+    ///
+    /// This is kept separate from the regular section cache because the latter also contains
+    /// off-screen hidden items and is deliberately tied to the main screen. A clear overlay
+    /// only needs the native items visible on the display it covers.
+    @available(macOS 14.0, *)
+    private func createVisibleClearImages(for screen: NSScreen) async -> [CGWindowID: CGImage] {
+        let items = MenuBarItem.getMenuBarItems(
+            on: screen.displayID,
+            onScreenOnly: true,
+            activeSpaceOnly: false
+        )
+        return await createClearWindowImagesWithScreenCaptureKit(for: items, screen: screen)
     }
 
     /// Captures the images of the current menu bar items and returns a dictionary containing
@@ -367,6 +407,36 @@ final class MenuBarItemImageCache: ObservableObject {
             let screen = NSScreen.main
         else {
             return
+        }
+
+        let isClearAppearance = await appState.appearanceManager.configuration.shapeKind == .clear
+        if isClearAppearance, #available(macOS 14.0, *) {
+            let screens = await MainActor.run { NSScreen.screens }
+            var imagesByDisplay = [CGDirectDisplayID: [CGWindowID: CGImage]]()
+
+            for screen in screens {
+                guard
+                    await appState.isScreenCaptureAllowed,
+                    !Task.isCancelled
+                else {
+                    return
+                }
+                imagesByDisplay[screen.displayID] = await createVisibleClearImages(for: screen)
+            }
+
+            guard
+                await appState.isScreenCaptureAllowed,
+                !Task.isCancelled
+            else {
+                return
+            }
+            await MainActor.run { [imagesByDisplay] in
+                clearImagesByDisplay = imagesByDisplay
+            }
+        } else if !clearImagesByDisplay.isEmpty {
+            await MainActor.run {
+                clearImagesByDisplay.removeAll()
+            }
         }
 
         var newImages = [MenuBarItemInfo: CGImage]()

@@ -626,6 +626,13 @@ private final class MenuBarOverlayPanelContentView: NSView {
                         self?.needsDisplay = true
                     }
                     .store(in: &c)
+
+                appState.imageCache.$clearImagesByDisplay
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        self?.needsDisplay = true
+                    }
+                    .store(in: &c)
             }
 
             // Redraw whenever the desktop wallpaper changes.
@@ -888,7 +895,10 @@ private final class MenuBarOverlayPanelContentView: NSView {
 
         let displayID = overlayPanel.owningScreen.displayID
         let displayBounds = CGDisplayBounds(displayID)
-        let images = appState.imageCache.images
+        let clearImages = appState.imageCache.clearImagesByDisplay[displayID]
+        let legacyImages = appState.imageCache.screen?.displayID == displayID
+            ? appState.imageCache.images
+            : [:]
         let items = MenuBarItem.getMenuBarItems(
             on: displayID,
             onScreenOnly: true,
@@ -900,7 +910,7 @@ private final class MenuBarOverlayPanelContentView: NSView {
         context.imageInterpolation = .high
 
         for item in items {
-            guard let image = images[item.info] else {
+            guard let image = clearImages?[item.windowID] ?? legacyImages[item.info] else {
                 continue
             }
 
