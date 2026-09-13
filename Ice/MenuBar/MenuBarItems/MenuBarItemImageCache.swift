@@ -292,13 +292,20 @@ final class MenuBarItemImageCache: ObservableObject {
     /// off-screen hidden items and is deliberately tied to the main screen. A clear overlay
     /// only needs the native items visible on the display it covers.
     @available(macOS 14.0, *)
-    private func createVisibleClearImages(for screen: NSScreen) async -> [CGWindowID: CGImage] {
+    private func createVisibleClearImages(for screen: NSScreen) async -> [CGWindowID: CGImage]? {
         let items = MenuBarItem.getMenuBarItems(
             on: screen.displayID,
             onScreenOnly: true,
             activeSpaceOnly: false
         )
-        return await createClearWindowImagesWithScreenCaptureKit(for: items, screen: screen)
+        guard !items.isEmpty else {
+            return nil
+        }
+        let images = await createClearWindowImagesWithScreenCaptureKit(for: items, screen: screen)
+        guard !images.isEmpty else {
+            return nil
+        }
+        return images
     }
 
     /// Captures the images of the current menu bar items and returns a dictionary containing
@@ -412,7 +419,10 @@ final class MenuBarItemImageCache: ObservableObject {
         let isClearAppearance = await appState.appearanceManager.configuration.shapeKind == .clear
         if isClearAppearance, #available(macOS 14.0, *) {
             let screens = await MainActor.run { NSScreen.screens }
-            var imagesByDisplay = [CGDirectDisplayID: [CGWindowID: CGImage]]()
+            let activeDisplayIDs = Set(screens.map(\.displayID))
+            var imagesByDisplay = await MainActor.run {
+                clearImagesByDisplay.filter { activeDisplayIDs.contains($0.key) }
+            }
 
             for screen in screens {
                 guard
@@ -421,7 +431,11 @@ final class MenuBarItemImageCache: ObservableObject {
                 else {
                     return
                 }
-                imagesByDisplay[screen.displayID] = await createVisibleClearImages(for: screen)
+                if let images = await createVisibleClearImages(for: screen) {
+                    var mergedImages = imagesByDisplay[screen.displayID] ?? [:]
+                    mergedImages.merge(images) { _, new in new }
+                    imagesByDisplay[screen.displayID] = mergedImages
+                }
             }
 
             guard

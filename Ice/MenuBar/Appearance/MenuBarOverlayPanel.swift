@@ -339,8 +339,57 @@ final class MenuBarOverlayPanel: NSPanel {
         else {
             return
         }
-        applicationMenuItems = menuBarManager.getApplicationMenuItems(for: display)
-        applicationMenuFrame = menuBarManager.getApplicationMenuFrame(for: display)
+
+        func snapshot(for displayID: CGDirectDisplayID) -> (frame: CGRect, items: [MenuBarApplicationMenuItem])? {
+            guard
+                let frame = menuBarManager.getApplicationMenuFrame(for: displayID),
+                !frame.isNull,
+                frame.width > 0
+            else {
+                return nil
+            }
+            let items = menuBarManager.getApplicationMenuItems(for: displayID)
+            guard !items.isEmpty else {
+                return nil
+            }
+            return (frame, items)
+        }
+
+        if let current = snapshot(for: display) {
+            applicationMenuFrame = current.frame
+            applicationMenuItems = current.items
+            return
+        }
+
+        // Accessibility can briefly return the active display's menu bar even when queried
+        // at another display's origin. In that case the target display gets no intersecting
+        // items. Mirror a valid snapshot from whichever display AX currently exposes instead
+        // of clearing the last good menu while focus moves between screens.
+        var fallback: (screen: NSScreen, snapshot: (frame: CGRect, items: [MenuBarApplicationMenuItem]))?
+        for screen in NSScreen.screens where screen.displayID != display {
+            if let source = snapshot(for: screen.displayID) {
+                fallback = (screen, source)
+                break
+            }
+        }
+        guard let fallback else {
+            return
+        }
+
+        let sourceBounds = CGDisplayBounds(fallback.screen.displayID)
+        let targetBounds = CGDisplayBounds(display)
+        let dx = targetBounds.minX - sourceBounds.minX
+        let dy = targetBounds.minY - sourceBounds.minY
+
+        applicationMenuFrame = fallback.snapshot.frame.offsetBy(dx: dx, dy: dy)
+        applicationMenuItems = fallback.snapshot.items.map { item in
+            MenuBarApplicationMenuItem(
+                title: item.title,
+                frame: item.frame.offsetBy(dx: dx, dy: dy),
+                kind: item.kind,
+                isEnabled: item.isEnabled
+            )
+        }
     }
 
     /// Cancels any pending clear-wallpaper capture and drops the cached wallpaper window.
@@ -908,9 +957,58 @@ private final class MenuBarOverlayPanelContentView: NSView {
         context.saveGraphicsState()
         defer { context.restoreGraphicsState() }
         context.imageInterpolation = .high
+        var otherItemsByDisplay = [CGDirectDisplayID: [MenuBarItem]]()
 
         for item in items {
-            guard let image = clearImages?[item.windowID] ?? legacyImages[item.info] else {
+            let image: CGImage? = {
+                if let image = clearImages?[item.windowID] {
+                    return image
+                }
+
+                // The WindowServer moves the two sets of status-item windows between displays
+                // when keyboard focus changes. During that handoff the same window ID is often
+                // still present in the other display's previous clear cache.
+                for (otherDisplayID, images) in appState.imageCache.clearImagesByDisplay
+                    where otherDisplayID != displayID
+                {
+                    if let image = images[item.windowID] {
+                        return image
+                    }
+                }
+
+                // Some system items are recreated with a different window ID. Match the same
+                // owning process and ordinal on another display as a short-lived fallback; the
+                // next complete cache refresh replaces this with the target display's pixels.
+                let ownerItems = items.filter { $0.ownerPID == item.ownerPID }
+                if let ownerIndex = ownerItems.firstIndex(where: { $0.windowID == item.windowID }) {
+                    for screen in NSScreen.screens where screen.displayID != displayID {
+                        let allOtherItems: [MenuBarItem]
+                        if let cached = otherItemsByDisplay[screen.displayID] {
+                            allOtherItems = cached
+                        } else {
+                            let fetched = MenuBarItem.getMenuBarItems(
+                                on: screen.displayID,
+                                onScreenOnly: true,
+                                activeSpaceOnly: false
+                            )
+                            otherItemsByDisplay[screen.displayID] = fetched
+                            allOtherItems = fetched
+                        }
+                        let otherItems = allOtherItems.filter { $0.ownerPID == item.ownerPID }
+                        guard otherItems.indices.contains(ownerIndex) else {
+                            continue
+                        }
+                        let otherItem = otherItems[ownerIndex]
+                        if let image = appState.imageCache.clearImagesByDisplay[screen.displayID]?[otherItem.windowID] {
+                            return image
+                        }
+                    }
+                }
+
+                return legacyImages[item.info]
+            }()
+
+            guard let image else {
                 continue
             }
 
