@@ -83,6 +83,11 @@ final class ControlItem {
         return representation.cgImage
     }
 
+    /// Whether the control item's current image expects the system menu bar tint.
+    var renderedImageUsesTemplateTint: Bool {
+        statusItem.button?.image?.isTemplate == true
+    }
+
     /// A Boolean value that indicates whether the control item serves as
     /// a divider between sections.
     var isSectionDivider: Bool {
