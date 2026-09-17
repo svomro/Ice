@@ -82,6 +82,21 @@ final class MenuBarOverlayPanel: NSPanel {
     /// Identifies the current clear-wallpaper capture so a stale task cannot clear a newer one.
     private var clearWallpaperCaptureToken: UUID?
 
+    /// Start time of the current short high-frequency clear-wallpaper refresh burst.
+    private var clearWallpaperBurstStartedAt: Date?
+
+    /// Number of consecutive unchanged frames observed during the current burst.
+    private var clearWallpaperStableFrameCount = 0
+
+    /// Minimum time to keep a burst alive before allowing unchanged frames to stop it.
+    private static let clearWallpaperBurstMinimumDuration: TimeInterval = 1
+
+    /// Maximum time to keep high-frequency clear-wallpaper capture running.
+    private static let clearWallpaperBurstMaximumDuration: TimeInterval = 5
+
+    /// Number of consecutive unchanged frames required to consider the wallpaper settled.
+    private static let clearWallpaperStableFramesToStop = 5
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -207,17 +222,18 @@ final class MenuBarOverlayPanel: NSPanel {
             }
             .store(in: &c)
 
-        // Track animated/video wallpapers in clear mode with ScreenCaptureKit's
-        // single-frame API. The captured region is only the menu-bar strip.
+        // Track the short animated transition used by macOS aerial wallpapers without
+        // continuously taking 15 snapshots per second while the desktop is static.
         Timer.publish(every: 1.0 / 15.0, on: .main, in: .common)
             .autoconnect()
             .filter { [weak self] _ in
                 guard let self, let appState else { return false }
                 return appState.appearanceManager.configuration.shapeKind == .clear
                     && appState.isScreenCaptureAllowed
+                    && self.clearWallpaperBurstStartedAt != nil
             }
             .sink { [weak self] _ in
-                self?.scheduleClearWallpaperCapture()
+                self?.scheduleClearWallpaperCapture(isBurstFrame: true)
             }
             .store(in: &c)
 
@@ -288,7 +304,7 @@ final class MenuBarOverlayPanel: NSPanel {
                         insertUpdateFlag(.applicationMenuFrame)
                         insertUpdateFlag(.desktopWallpaper)
                         contentView?.needsDisplay = true
-                        scheduleClearWallpaperCapture()
+                        beginClearWallpaperBurst()
                     } else {
                         resetClearWallpaperCapture()
                     }
@@ -400,11 +416,54 @@ final class MenuBarOverlayPanel: NSPanel {
         clearWallpaperCaptureTask = nil
         clearWallpaperWindow = nil
         clearWallpaperWindowID = nil
+        clearWallpaperBurstStartedAt = nil
+        clearWallpaperStableFrameCount = 0
+    }
+
+    /// Starts a short 15 FPS refresh burst for transitions such as unlock and space changes.
+    @MainActor
+    private func beginClearWallpaperBurst() {
+        guard
+            clearWallpaperBurstStartedAt == nil,
+            let appState,
+            appState.isScreenCaptureAllowed,
+            appState.appearanceManager.configuration.shapeKind == .clear
+        else {
+            return
+        }
+
+        clearWallpaperBurstStartedAt = Date()
+        clearWallpaperStableFrameCount = 0
+        scheduleClearWallpaperCapture(isBurstFrame: true)
+    }
+
+    /// Records one burst frame and stops high-frequency capture once the image settles.
+    @MainActor
+    private func recordClearWallpaperBurstFrame(changed: Bool) {
+        guard let startedAt = clearWallpaperBurstStartedAt else {
+            return
+        }
+
+        clearWallpaperStableFrameCount = changed ? 0 : clearWallpaperStableFrameCount + 1
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let isStable = elapsed >= Self.clearWallpaperBurstMinimumDuration
+            && clearWallpaperStableFrameCount >= Self.clearWallpaperStableFramesToStop
+        let timedOut = elapsed >= Self.clearWallpaperBurstMaximumDuration
+
+        if isStable || timedOut {
+            let elapsedString = String(format: "%.2f", elapsed)
+            Logger.overlayPanel.debug(
+                "Stopping clear wallpaper burst after \(elapsedString)s " +
+                "(stable frames: \(clearWallpaperStableFrameCount))"
+            )
+            clearWallpaperBurstStartedAt = nil
+            clearWallpaperStableFrameCount = 0
+        }
     }
 
     /// Starts one clear-wallpaper capture if another one is not already in flight.
     @MainActor
-    private func scheduleClearWallpaperCapture() {
+    private func scheduleClearWallpaperCapture(isBurstFrame: Bool = false) {
         guard
             clearWallpaperCaptureTask == nil,
             let appState,
@@ -418,25 +477,33 @@ final class MenuBarOverlayPanel: NSPanel {
         clearWallpaperCaptureToken = token
         clearWallpaperCaptureTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await updateClearDesktopWallpaper()
+            let changed = await updateClearDesktopWallpaper()
             guard clearWallpaperCaptureToken == token else {
                 return
             }
             clearWallpaperCaptureTask = nil
             clearWallpaperCaptureToken = nil
+
+            if isBurstFrame {
+                if let changed {
+                    recordClearWallpaperBurstFrame(changed: changed)
+                }
+            } else if changed == true {
+                beginClearWallpaperBurst()
+            }
         }
     }
 
     /// Captures the current clear-mode wallpaper strip with ScreenCaptureKit.
     @MainActor
-    private func updateClearDesktopWallpaper() async {
+    private func updateClearDesktopWallpaper() async -> Bool? {
         guard
             let appState,
             appState.isScreenCaptureAllowed,
             appState.appearanceManager.configuration.shapeKind == .clear,
             !Task.isCancelled
         else {
-            return
+            return nil
         }
 
         let windows = WindowInfo.getOnScreenWindows()
@@ -445,7 +512,7 @@ final class MenuBarOverlayPanel: NSPanel {
             let wallpaperInfo = WindowInfo.getWallpaperWindow(from: windows, for: display),
             let menuBarInfo = WindowInfo.getMenuBarWindow(from: windows, for: display)
         else {
-            return
+            return nil
         }
 
         if clearWallpaperWindowID != wallpaperInfo.windowID || clearWallpaperWindow == nil {
@@ -455,7 +522,7 @@ final class MenuBarOverlayPanel: NSPanel {
                     onScreenWindowsOnly: true
                 )
                 guard !Task.isCancelled, appState.isScreenCaptureAllowed else {
-                    return
+                    return nil
                 }
                 clearWallpaperWindow = content.windows.first { $0.windowID == wallpaperInfo.windowID }
                 clearWallpaperWindowID = clearWallpaperWindow == nil ? nil : wallpaperInfo.windowID
@@ -463,12 +530,12 @@ final class MenuBarOverlayPanel: NSPanel {
                 Logger.overlayPanel.debug(
                     "ScreenCaptureKit wallpaper discovery failed: \(error.localizedDescription)"
                 )
-                return
+                return nil
             }
         }
 
         guard let clearWallpaperWindow else {
-            return
+            return nil
         }
 
         let scale = owningScreen.backingScaleFactor
@@ -491,17 +558,20 @@ final class MenuBarOverlayPanel: NSPanel {
                 configuration: configuration
             )
             guard !Task.isCancelled, appState.isScreenCaptureAllowed else {
-                return
+                return nil
             }
-            if desktopWallpaper?.dataProvider?.data != wallpaper.dataProvider?.data {
+            let changed = desktopWallpaper?.dataProvider?.data != wallpaper.dataProvider?.data
+            if changed {
                 desktopWallpaper = wallpaper
             }
+            return changed
         } catch {
             Logger.overlayPanel.debug(
                 "ScreenCaptureKit wallpaper capture failed: \(error.localizedDescription)"
             )
             self.clearWallpaperWindow = nil
             clearWallpaperWindowID = nil
+            return nil
         }
     }
 
@@ -514,6 +584,9 @@ final class MenuBarOverlayPanel: NSPanel {
             }
             return
         }
+
+        clearWallpaperBurstStartedAt = nil
+        clearWallpaperStableFrameCount = 0
 
         guard
             let wallpaperWindow = WindowInfo.getWallpaperWindow(from: windows, for: display),
