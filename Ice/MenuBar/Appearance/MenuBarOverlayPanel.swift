@@ -624,6 +624,17 @@ final class MenuBarOverlayPanel: NSPanel {
             return
         }
 
+        // A panel with `.moveToActiveSpace` can be rehomed onto another display
+        // when this display enters a native fullscreen Space. Re-run the same
+        // validation used by updates before ordering the panel front so a
+        // fullscreen display cannot leave its menu bar overlay on a desktop
+        // Space belonging to a different screen.
+        let windows = WindowInfo.getOnScreenWindows()
+        guard validate(for: .showing, with: windows) != nil else {
+            orderOut(self)
+            return
+        }
+
         guard let menuBarHeight = owningScreen.getMenuBarHeight() else {
             return
         }
